@@ -2,20 +2,18 @@ package domain_processor
 
 import "fmt"
 
-// Service contains the business logic for processing domains.
-type Service struct {
-	// Add dependencies here if needed (e.g., database, external API clients)
+type DomainMessage struct {
+	Value     string `json:"value"`
+	CompanyID string `json:"companyId"`
 }
 
-// NewService creates a new DomainProcessorService.
+type Service struct {
+}
+
 func NewService() *Service {
 	return &Service{}
 }
 
-// ProcessDomain mocks the subdomain generation logic.
-// In a real scenario, this would involve calling external libraries or complex algorithms.
-func (s *Service) ProcessDomain(domain string) string {
-	// MVP: Just prepend "www."
-	return fmt.Sprintf("www.%s", domain)
+func (s *Service) ProcessDomain(msg DomainMessage) string {
+	return fmt.Sprintf("www.%s", msg.Value)
 }
-

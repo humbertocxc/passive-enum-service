@@ -2,11 +2,10 @@ package domain_processor
 
 import (
 	"context"
-	"fmt"
+	"encoding/json"
 	"log"
-	"time"
-
 	"recon-automation-microservice/pkg/rabbitmq"
+	"time"
 )
 
 type Controller struct {
@@ -23,6 +22,11 @@ func NewController(rbmqClient *rabbitmq.Client, domainService *Service, inputQue
 		inputQueue:    inputQueue,
 		outputQueue:   outputQueue,
 	}
+}
+
+type queueEnvelope struct {
+	Pattern string `json:"pattern"`
+	Data    string `json:"data"`
 }
 
 func (c *Controller) StartConsuming(ctx context.Context) {
@@ -43,21 +47,57 @@ func (c *Controller) StartConsuming(ctx context.Context) {
 				return
 			}
 
-			domain := string(d.Body)
-			log.Printf("Received message from '%s': %s", c.inputQueue, domain)
+			var env queueEnvelope
+			if err := json.Unmarshal(d.Body, &env); err != nil {
+				log.Printf("Failed to unmarshal envelope: %v", err)
+				d.Nack(false, false)
+				continue
+			}
 
-			mockedSubdomain := c.domainService.ProcessDomain(domain)
-			responseMessage := fmt.Sprintf("Original: %s, Mocked Subdomain: %s", domain, mockedSubdomain)
+			var msg DomainMessage
+			if err := json.Unmarshal([]byte(env.Data), &msg); err != nil {
+				log.Printf("Failed to unmarshal data field: %v", err)
+				d.Nack(false, false)
+				continue
+			}
 
+			log.Printf("Received message from '%s': value=%s, companyId=%s", c.inputQueue, msg.Value, msg.CompanyID)
+
+			mockedSubdomain := c.domainService.ProcessDomain(msg)
+
+			response := struct {
+				Value     string `json:"value"`
+				CompanyID string `json:"companyId"`
+			}{
+				Value:     mockedSubdomain,
+				CompanyID: msg.CompanyID,
+			}
+			responseData, err := json.Marshal(response)
+			if err != nil {
+				log.Printf("Failed to marshal response data: %v", err)
+				d.Nack(false, false)
+				continue
+			}
+
+			envelope := queueEnvelope{
+				Pattern: c.outputQueue,
+				Data:    string(responseData),
+			}
+			envelopeBytes, err := json.Marshal(envelope)
+			if err != nil {
+				log.Printf("Failed to marshal envelope: %v", err)
+				d.Nack(false, false)
+				continue
+			}
 			publishCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			err := c.rbmqClient.Publish(publishCtx, "", c.outputQueue, []byte(responseMessage))
+			err = c.rbmqClient.Publish(publishCtx, "", c.outputQueue, envelopeBytes)
 			cancel()
 
 			if err != nil {
 				log.Printf("Failed to publish message to '%s': %v", c.outputQueue, err)
 				d.Nack(false, true)
 			} else {
-				log.Printf("Published message to '%s': %s", c.outputQueue, responseMessage)
+				log.Printf("Published message to '%s': %s", c.outputQueue, string(envelopeBytes))
 				d.Ack(false)
 			}
 		}

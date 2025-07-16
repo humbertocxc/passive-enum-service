@@ -26,8 +26,8 @@ func main() {
 
 	log.Println("Connected to RabbitMQ successfully!")
 
-	inputQueue := "domains_input"
-	outputQueue := "subdomains_output"
+	inputQueue := "domain_to_enum_queue"
+	outputQueue := "found_subs_queue"
 
 	err = rbmqClient.DeclareQueue(inputQueue)
 	if err != nil {
