@@ -7,12 +7,20 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/joho/godotenv"
+
 	"recon-automation-microservice/config"
 	"recon-automation-microservice/modules/domain_processor"
 	"recon-automation-microservice/pkg/rabbitmq"
+	"recon-automation-microservice/pkg/subfinder"
 )
 
 func main() {
+	err := godotenv.Load()
+	if err != nil {
+		log.Printf("Warning: Error loading .env file (it might not exist or be empty): %v", err)
+	}
+
 	cfg, err := config.LoadConfig()
 	if err != nil {
 		log.Fatalf("Failed to load configuration: %v", err)
@@ -39,7 +47,19 @@ func main() {
 	}
 
 	domainService := domain_processor.NewService()
-	domainController := domain_processor.NewController(rbmqClient, domainService, inputQueue, outputQueue)
+
+	subfinderPath := cfg.SubfinderPath
+	subfinderTimeout := cfg.SubfinderTimeout
+
+	subfinderService := subfinder.NewService(subfinderPath, subfinderTimeout)
+
+	domainController := domain_processor.NewController(
+		rbmqClient,
+		domainService,
+		subfinderService,
+		inputQueue,
+		outputQueue,
+	)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
@@ -53,6 +73,5 @@ func main() {
 
 	log.Println("Shutting down gracefully...")
 	cancel()
-	rbmqClient.Close()
 	log.Println("Application stopped.")
 }

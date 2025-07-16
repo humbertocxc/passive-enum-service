@@ -5,28 +5,41 @@ import (
 	"encoding/json"
 	"log"
 	"recon-automation-microservice/pkg/rabbitmq"
+	"recon-automation-microservice/pkg/subfinder"
 	"time"
 )
 
-type Controller struct {
-	rbmqClient    *rabbitmq.Client
-	domainService *Service
-	inputQueue    string
-	outputQueue   string
-}
-
-func NewController(rbmqClient *rabbitmq.Client, domainService *Service, inputQueue, outputQueue string) *Controller {
-	return &Controller{
-		rbmqClient:    rbmqClient,
-		domainService: domainService,
-		inputQueue:    inputQueue,
-		outputQueue:   outputQueue,
-	}
+type DomainMessage struct {
+	Value     string `json:"value"`
+	CompanyID string `json:"companyId"`
 }
 
 type queueEnvelope struct {
 	Pattern string `json:"pattern"`
 	Data    string `json:"data"`
+}
+
+type Controller struct {
+	rbmqClient       *rabbitmq.Client
+	domainService    *Service
+	subfinderService subfinder.Service
+	inputQueue       string
+	outputQueue      string
+}
+
+func NewController(
+	rbmqClient *rabbitmq.Client,
+	domainService *Service,
+	subfinderService subfinder.Service,
+	inputQueue, outputQueue string,
+) *Controller {
+	return &Controller{
+		rbmqClient:       rbmqClient,
+		domainService:    domainService,
+		subfinderService: subfinderService,
+		inputQueue:       inputQueue,
+		outputQueue:      outputQueue,
+	}
 }
 
 func (c *Controller) StartConsuming(ctx context.Context) {
@@ -56,48 +69,63 @@ func (c *Controller) StartConsuming(ctx context.Context) {
 
 			var msg DomainMessage
 			if err := json.Unmarshal([]byte(env.Data), &msg); err != nil {
-				log.Printf("Failed to unmarshal data field: %v", err)
+				log.Printf("Failed to unmarshal data field from envelope for domain %s: %v", env.Data, err)
 				d.Nack(false, false)
 				continue
 			}
 
 			log.Printf("Received message from '%s': value=%s, companyId=%s", c.inputQueue, msg.Value, msg.CompanyID)
 
-			mockedSubdomain := c.domainService.ProcessDomain(msg)
-
-			response := struct {
-				Value     string `json:"value"`
-				CompanyID string `json:"companyId"`
-			}{
-				Value:     mockedSubdomain,
-				CompanyID: msg.CompanyID,
-			}
-			responseData, err := json.Marshal(response)
+			discoveredSubdomains, err := c.subfinderService.FindSubdomains(ctx, msg.Value)
 			if err != nil {
-				log.Printf("Failed to marshal response data: %v", err)
+				log.Printf("Error running Subfinder for domain %s: %v", msg.Value, err)
 				d.Nack(false, false)
 				continue
 			}
+			log.Printf("Discovered %d subdomains for %s using Subfinder.", len(discoveredSubdomains), msg.Value)
 
-			envelope := queueEnvelope{
-				Pattern: c.outputQueue,
-				Data:    string(responseData),
-			}
-			envelopeBytes, err := json.Marshal(envelope)
-			if err != nil {
-				log.Printf("Failed to marshal envelope: %v", err)
-				d.Nack(false, false)
-				continue
-			}
-			publishCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			err = c.rbmqClient.Publish(publishCtx, "", c.outputQueue, envelopeBytes)
-			cancel()
+			anySubdomainPublishFailed := false
 
-			if err != nil {
-				log.Printf("Failed to publish message to '%s': %v", c.outputQueue, err)
+			for _, subdomain := range discoveredSubdomains {
+				response := DomainMessage{
+					Value:     subdomain,
+					CompanyID: msg.CompanyID,
+				}
+				responseData, err := json.Marshal(response)
+				if err != nil {
+					log.Printf("Failed to marshal response data for subdomain %s (CompanyID: %s): %v", subdomain, msg.CompanyID, err)
+					anySubdomainPublishFailed = true
+					continue
+				}
+
+				envelope := queueEnvelope{
+					Pattern: c.outputQueue,
+					Data:    string(responseData),
+				}
+				envelopeBytes, err := json.Marshal(envelope)
+				if err != nil {
+					log.Printf("Failed to marshal envelope for subdomain %s (CompanyID: %s): %v", subdomain, msg.CompanyID, err)
+					anySubdomainPublishFailed = true
+					continue
+				}
+
+				publishCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				err = c.rbmqClient.Publish(publishCtx, "", c.outputQueue, envelopeBytes)
+				cancel()
+
+				if err != nil {
+					log.Printf("Failed to publish subdomain %s to '%s': %v", subdomain, c.outputQueue, err)
+					anySubdomainPublishFailed = true
+				} else {
+					log.Printf("Published subdomain '%s' for CompanyID '%s' to '%s'", subdomain, msg.CompanyID, c.outputQueue)
+				}
+			}
+
+			if anySubdomainPublishFailed {
+				log.Printf("Some subdomains failed to publish for original domain '%s'. Nacking original message with requeue.", msg.Value)
 				d.Nack(false, true)
 			} else {
-				log.Printf("Published message to '%s': %s", c.outputQueue, string(envelopeBytes))
+				log.Printf("All discovered subdomains for original domain '%s' published successfully. Acknowledging original message.", msg.Value)
 				d.Ack(false)
 			}
 		}
