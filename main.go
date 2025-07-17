@@ -34,8 +34,8 @@ func main() {
 
 	log.Println("Connected to RabbitMQ successfully!")
 
-	inputQueue := "domain_to_enum_queue"
-	outputQueue := "found_subs_queue"
+	inputQueue := "domains_to_passive_enum_queue"
+	outputQueue := "passive_found_subs_queue"
 
 	err = rbmqClient.DeclareQueue(inputQueue)
 	if err != nil {
