@@ -15,8 +15,8 @@ type DomainMessage struct {
 }
 
 type queueEnvelope struct {
-	Pattern string `json:"pattern"`
-	Data    string `json:"data"`
+	Pattern string          `json:"pattern"`
+	Data    json.RawMessage `json:"data"` // raw JSON instead of string
 }
 
 type Controller struct {
@@ -68,8 +68,8 @@ func (c *Controller) StartConsuming(ctx context.Context) {
 			}
 
 			var msg DomainMessage
-			if err := json.Unmarshal([]byte(env.Data), &msg); err != nil {
-				log.Printf("Failed to unmarshal data field from envelope for domain %s: %v", env.Data, err)
+			if err := json.Unmarshal(env.Data, &msg); err != nil {
+				log.Printf("Failed to unmarshal data field for domain: %v", err)
 				d.Nack(false, false)
 				continue
 			}
@@ -100,7 +100,7 @@ func (c *Controller) StartConsuming(ctx context.Context) {
 
 				envelope := queueEnvelope{
 					Pattern: c.outputQueue,
-					Data:    string(responseData),
+					Data:    responseData, // now just raw JSON, not stringified
 				}
 				envelopeBytes, err := json.Marshal(envelope)
 				if err != nil {
